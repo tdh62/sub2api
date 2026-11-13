@@ -1680,7 +1680,12 @@ export default {
       viewStats: 'View Stats',
       usageStatistics: 'Usage Statistics',
       last30DaysUsage: 'Last 30 days usage statistics (based on actual usage days)',
+      allTimeUsage: 'All retained usage (daily averages use active days; clearing logs reduces totals)',
       stats: {
+        allTimeCost: 'All-Time Total Cost',
+        allTimeRequests: 'All-Time Total Requests',
+        allTimeTokens: 'All-Time Total',
+        allTimeTrend: 'Historical Cost & Request Trend',
         totalCost: '30-Day Total Cost',
         accumulatedCost: 'Accumulated cost',
         standardCost: 'Standard',

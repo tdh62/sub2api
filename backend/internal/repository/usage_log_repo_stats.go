@@ -470,7 +470,7 @@ func normalizePositiveInt64IDs(ids []int64) []int64 {
 	return out
 }
 
-// GetBatchUserUsageStats gets today and total actual_cost for multiple users within a time range.
+// GetBatchUserUsageStats gets today, period, and all-retained actual_cost for multiple users within a time range.
 // If startTime is zero, defaults to 30 days ago.
 func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs []int64, startTime, endTime time.Time) (map[int64]*BatchUserUsageStats, error) {
 	result := make(map[int64]*BatchUserUsageStats)
@@ -498,12 +498,12 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 			ul.user_id,
 			` + usageLogEffectivePlatformExpr + ` as platform,
 			COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $2 AND ul.created_at < $3), 0) as total_cost,
+			COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at < $3), 0) as all_time_cost,
 			COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $4), 0) as today_cost
 		FROM usage_logs ul
 		LEFT JOIN groups g ON g.id = ul.group_id
 		LEFT JOIN accounts a ON a.id = ul.account_id
 		WHERE ul.user_id = ANY($1)
-		  AND ul.created_at >= LEAST($2, $4)
 		  AND ` + usageLogSuccessFilterUL + `
 		GROUP BY ul.user_id, ` + usageLogEffectivePlatformExpr + `
 	`
@@ -516,8 +516,9 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 		var userID int64
 		var platform sql.NullString
 		var total float64
+		var allTimeTotal float64
 		var todayTotal float64
-		if err := rows.Scan(&userID, &platform, &total, &todayTotal); err != nil {
+		if err := rows.Scan(&userID, &platform, &total, &allTimeTotal, &todayTotal); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -526,12 +527,14 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 			continue
 		}
 		stats.TotalActualCost += total
+		stats.AllTimeActualCost += allTimeTotal
 		stats.TodayActualCost += todayTotal
 		if platform.Valid && platform.String != "" {
 			stats.ByPlatform = append(stats.ByPlatform, PlatformUsage{
-				Platform:        platform.String,
-				TotalActualCost: total,
-				TodayActualCost: todayTotal,
+				Platform:          platform.String,
+				TotalActualCost:   total,
+				AllTimeActualCost: allTimeTotal,
+				TodayActualCost:   todayTotal,
 			})
 		}
 	}
@@ -548,7 +551,7 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 // BatchAPIKeyUsageStats represents usage stats for a single API key
 type BatchAPIKeyUsageStats = usagestats.BatchAPIKeyUsageStats
 
-// GetBatchAPIKeyUsageStats gets today and total actual_cost for multiple API keys within a time range.
+// GetBatchAPIKeyUsageStats gets today, period, and all-retained actual_cost for multiple API keys within a time range.
 // If startTime is zero, defaults to 30 days ago.
 func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyIDs []int64, startTime, endTime time.Time) (map[int64]*BatchAPIKeyUsageStats, error) {
 	result := make(map[int64]*BatchAPIKeyUsageStats)
@@ -573,10 +576,10 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 		SELECT
 			api_key_id,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $2 AND created_at < $3), 0) as total_cost,
+			COALESCE(SUM(actual_cost) FILTER (WHERE created_at < $3), 0) as all_time_cost,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $4), 0) as today_cost
 		FROM usage_logs
 		WHERE api_key_id = ANY($1)
-		  AND created_at >= LEAST($2, $4)
 		GROUP BY api_key_id
 	`
 	today := timezone.Today()
@@ -588,12 +591,14 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 		var apiKeyID int64
 		var total float64
 		var todayTotal float64
-		if err := rows.Scan(&apiKeyID, &total, &todayTotal); err != nil {
+		var allTimeTotal float64
+		if err := rows.Scan(&apiKeyID, &total, &allTimeTotal, &todayTotal); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		if stats, ok := result[apiKeyID]; ok {
 			stats.TotalActualCost = total
+			stats.AllTimeActualCost = allTimeTotal
 			stats.TodayActualCost = todayTotal
 		}
 	}
@@ -917,14 +922,24 @@ func (r *usageLogRepository) GetUpstreamEndpointStatsWithFilters(ctx context.Con
 
 // GetAccountUsageStats returns comprehensive usage statistics for an account over a time range
 func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (resp *AccountUsageStatsResponse, err error) {
-	daysCount := int(endTime.Sub(startTime).Hours()/24) + 1
-	if daysCount <= 0 {
-		daysCount = 30
+	// A zero start requests all retained logs, beginning on the first usage day.
+	if startTime.IsZero() {
+		var firstUsage time.Time
+		if err := scanSingleRow(ctx, r.sql,
+			"SELECT COALESCE(MIN(created_at), $2) FROM usage_logs WHERE account_id = $1 AND created_at < $3",
+			[]any{accountID, endTime.AddDate(0, 0, -1), endTime}, &firstUsage); err != nil {
+			return nil, err
+		}
+		startTime = timezone.StartOfDay(firstUsage)
 	}
+	// Count calendar days in the exclusive range, including across DST changes.
+	startDay := time.Date(startTime.Year(), startTime.Month(), startTime.Day(), 0, 0, 0, 0, time.UTC)
+	endDay := time.Date(endTime.Year(), endTime.Month(), endTime.Day(), 0, 0, 0, 0, time.UTC)
+	daysCount := max(1, int(endDay.Sub(startDay).Hours()/24))
 
 	query := `
 		SELECT
-			TO_CHAR(created_at, 'YYYY-MM-DD') as date,
+			TO_CHAR(created_at AT TIME ZONE $4, 'YYYY-MM-DD') as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
 			COALESCE(SUM(total_cost), 0) as cost,
@@ -936,7 +951,7 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		ORDER BY date ASC
 	`
 
-	rows, err := r.sql.QueryContext(ctx, query, accountID, startTime, endTime)
+	rows, err := r.sql.QueryContext(ctx, query, accountID, startTime, endTime, timezone.Location().String())
 	if err != nil {
 		return nil, err
 	}

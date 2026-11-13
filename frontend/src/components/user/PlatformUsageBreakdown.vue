@@ -14,6 +14,10 @@
       <span class="text-gray-500 dark:text-gray-400">{{ t('admin.users.total') }}:</span>
       <span class="font-medium text-gray-900 dark:text-white">${{ total.toFixed(4) }}</span>
     </div>
+    <div v-if="allTime !== undefined" class="mt-0.5 flex items-center gap-1.5" :title="t('dates.allTimeHint')">
+      <span class="text-gray-500 dark:text-gray-400">{{ t('dates.allTime') }}:</span>
+      <span class="font-medium text-gray-900 dark:text-white">${{ allTime.toFixed(4) }}</span>
+    </div>
 
     <div
       v-if="hasBreakdown"
@@ -21,7 +25,7 @@
     >
       <div class="mb-1.5 flex items-center justify-between gap-3 border-b border-white/10 pb-1 text-[11px] opacity-80">
         <span>{{ t('admin.users.platformBreakdown') }}</span>
-        <span class="font-mono">{{ t('admin.users.today') }} / {{ t('admin.users.total') }}</span>
+        <span class="font-mono">{{ t('admin.users.today') }} / {{ t('admin.users.total') }} / {{ t('dates.allTime') }}</span>
       </div>
       <div
         v-for="item in sortedBreakdown"
@@ -36,6 +40,8 @@
           ${{ item.today_actual_cost.toFixed(4) }}
           <span class="opacity-50">/</span>
           ${{ item.total_actual_cost.toFixed(4) }}
+          <span class="opacity-50">/</span>
+          ${{ (item.all_time_actual_cost ?? 0).toFixed(4) }}
         </span>
       </div>
     </div>
@@ -51,6 +57,7 @@ import type { PlatformUsage } from '@/api/admin/dashboard'
 const props = defineProps<{
   today: number
   total: number
+  allTime?: number
   byPlatform?: PlatformUsage[]
 }>()
 
@@ -64,6 +71,7 @@ interface BreakdownRow {
   platform: string
   today_actual_cost: number
   total_actual_cost: number
+  all_time_actual_cost?: number
   isOther?: boolean
 }
 
@@ -75,13 +83,16 @@ const sortedBreakdown = computed<BreakdownRow[]>(() => {
 
   const sumTotal = rows.reduce((s, r) => s + r.total_actual_cost, 0)
   const sumToday = rows.reduce((s, r) => s + r.today_actual_cost, 0)
+  const sumAllTime = rows.reduce((s, r) => s + (r.all_time_actual_cost ?? 0), 0)
+  const diffAllTime = Math.max(0, (props.allTime ?? 0) - sumAllTime)
   const diffTotal = Math.max(0, props.total - sumTotal)
   const diffToday = Math.max(0, props.today - sumToday)
-  if (diffTotal > OTHER_THRESHOLD || diffToday > OTHER_THRESHOLD) {
+  if (diffTotal > OTHER_THRESHOLD || diffToday > OTHER_THRESHOLD || diffAllTime > OTHER_THRESHOLD) {
     rows.push({
       platform: '__other__',
       today_actual_cost: diffToday,
       total_actual_cost: diffTotal,
+      all_time_actual_cost: diffAllTime,
       isOther: true
     })
   }

@@ -8,6 +8,10 @@
       <span class="text-gray-500 dark:text-gray-400">{{ t('admin.users.total') }}:</span>
       <span class="font-medium text-gray-900 dark:text-white">${{ usage.total_actual_cost.toFixed(4) }}</span>
     </div>
+    <div class="mt-0.5 flex items-center gap-1.5" :title="t('dates.allTimeHint')">
+      <span class="text-gray-500 dark:text-gray-400">{{ t('dates.allTime') }}:</span>
+      <span class="font-medium text-gray-900 dark:text-white">${{ (usage.all_time_actual_cost ?? 0).toFixed(4) }}</span>
+    </div>
   </div>
   <span v-else class="text-sm text-gray-400 dark:text-gray-500">—</span>
 </template>

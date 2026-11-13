@@ -1774,7 +1774,12 @@ export default {
       viewStats: '查看统计',
       usageStatistics: '使用统计',
       last30DaysUsage: '近30天使用统计（日均基于实际使用天数）',
+      allTimeUsage: '全部现存日志统计（日均基于实际使用天数，清理日志后累计会减少）',
       stats: {
+        allTimeCost: '历史总费用',
+        allTimeRequests: '历史总请求',
+        allTimeTokens: '历史总计',
+        allTimeTrend: '历史费用与请求趋势',
         totalCost: '30天总费用',
         accumulatedCost: '累计成本',
         standardCost: '标准计费',

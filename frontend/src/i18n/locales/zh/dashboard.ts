@@ -1055,6 +1055,8 @@ export default {
     last7Days: '近 7 天',
     last14Days: '近 14 天',
     last30Days: '近 30 天',
+    allTime: '历史累计',
+    allTimeHint: '基于全部现存使用日志，清理日志后累计会减少。',
     custom: '自定义',
     startDate: '开始日期',
     endDate: '结束日期',

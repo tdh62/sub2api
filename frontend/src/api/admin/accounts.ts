@@ -351,12 +351,12 @@ export async function applyOAuthCredentials(
 /**
  * Get account usage statistics
  * @param id - Account ID
- * @param days - Number of days (default: 30)
+ * @param days - Number of days (default: 30), or 'all' for all retained logs
  * @returns Account usage statistics with history, summary, and models
  */
-export async function getStats(id: number, days: number = 30): Promise<AccountUsageStatsResponse> {
+export async function getStats(id: number, days: number | 'all' = 30): Promise<AccountUsageStatsResponse> {
   const { data } = await apiClient.get<AccountUsageStatsResponse>(`/admin/accounts/${id}/stats`, {
-    params: { days }
+    params: days === 'all' ? { period: 'all' } : { days }
   })
   return data
 }

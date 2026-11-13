@@ -310,24 +310,27 @@ type UsageStats struct {
 // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 // Platform 取值与 ops 路径口径一致：优先 groups.platform，否则 accounts.platform。
 type PlatformUsage struct {
-	Platform        string  `json:"platform"`
-	TodayActualCost float64 `json:"today_actual_cost"`
-	TotalActualCost float64 `json:"total_actual_cost"`
+	Platform          string  `json:"platform"`
+	TodayActualCost   float64 `json:"today_actual_cost"`
+	TotalActualCost   float64 `json:"total_actual_cost"`
+	AllTimeActualCost float64 `json:"all_time_actual_cost"` // 全部现存日志的实际费用
 }
 
 // BatchUserUsageStats represents usage stats for a single user
 type BatchUserUsageStats struct {
-	UserID          int64           `json:"user_id"`
-	TodayActualCost float64         `json:"today_actual_cost"`
-	TotalActualCost float64         `json:"total_actual_cost"`
-	ByPlatform      []PlatformUsage `json:"by_platform,omitempty"`
+	UserID            int64           `json:"user_id"`
+	TodayActualCost   float64         `json:"today_actual_cost"`
+	TotalActualCost   float64         `json:"total_actual_cost"`
+	AllTimeActualCost float64         `json:"all_time_actual_cost"`
+	ByPlatform        []PlatformUsage `json:"by_platform,omitempty"`
 }
 
 // BatchAPIKeyUsageStats represents usage stats for a single API key
 type BatchAPIKeyUsageStats struct {
-	APIKeyID        int64   `json:"api_key_id"`
-	TodayActualCost float64 `json:"today_actual_cost"`
-	TotalActualCost float64 `json:"total_actual_cost"`
+	APIKeyID          int64   `json:"api_key_id"`
+	TodayActualCost   float64 `json:"today_actual_cost"`
+	TotalActualCost   float64 `json:"total_actual_cost"`
+	AllTimeActualCost float64 `json:"all_time_actual_cost"`
 }
 
 // AccountUsageHistory represents daily usage history for an account

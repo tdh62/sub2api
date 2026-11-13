@@ -1051,6 +1051,8 @@ export default {
     last7Days: 'Last 7 Days',
     last14Days: 'Last 14 Days',
     last30Days: 'Last 30 Days',
+    allTime: 'All Time',
+    allTimeHint: 'Based on all retained usage logs; clearing logs reduces this total.',
     custom: 'Custom',
     startDate: 'Start Date',
     endDate: 'End Date',

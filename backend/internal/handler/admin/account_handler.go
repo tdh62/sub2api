@@ -1732,6 +1732,13 @@ func (h *AccountHandler) GetStats(c *gin.Context) {
 	endTime := timezone.StartOfDay(now.AddDate(0, 0, 1))
 	startTime := timezone.StartOfDay(now.AddDate(0, 0, -days+1))
 
+	if period := c.Query("period"); period == "all" {
+		startTime = time.Time{}
+	} else if period != "" && period != "30d" {
+		response.BadRequest(c, "Invalid period, use 30d/all")
+		return
+	}
+
 	stats, err := h.accountUsageService.GetAccountUsageStats(c.Request.Context(), accountID, startTime, endTime)
 	if err != nil {
 		scopedOpenAIError(c, err)

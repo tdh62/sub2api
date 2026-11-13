@@ -468,7 +468,7 @@
             </button>
           </template>
 
-          <!-- 用量列自定义表头：列名 + 单个排序图标按钮，点击展开"今日/近30天"菜单。
+          <!-- 用量列自定义表头：列名 + 单个排序图标按钮，点击展开"今日/近30天/历史累计"菜单。
                column.sortable=false，DataTable 内置点击逻辑不会触发；
                菜单项三态循环：desc → asc → off。 -->
           <template
@@ -492,7 +492,7 @@
                   <span
                     v-if="usageSort && usageSort.key === usageKey"
                     class="text-[10px] normal-case font-medium tracking-normal"
-                  >{{ usageSort.metric === 'today' ? t('admin.users.today') : t('admin.users.total') }}</span>
+                  >{{ usageSort.metric === 'today' ? t('admin.users.today') : usageSort.metric === 'allTime' ? t('dates.allTime') : t('admin.users.total') }}</span>
                   <svg
                     v-if="usageSort && usageSort.key === usageKey"
                     class="h-3.5 w-3.5"
@@ -510,13 +510,13 @@
                     <path d="M10 3l-4 5h8l-4-5zM10 17l4-5H6l4 5z" />
                   </svg>
                 </button>
-                <!-- 弹出菜单：今日 / 近30天，点击进行三态循环切换。 -->
+                <!-- 弹出菜单：今日 / 近30天 / 历史累计，点击进行三态循环切换。 -->
                 <div
                   v-if="openUsageSortMenu === usageKey"
                   class="absolute right-0 top-full z-50 mt-1 min-w-[120px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
                 >
                   <button
-                    v-for="metric in (['today', 'total'] as const)"
+                    v-for="metric in (['today', 'total', 'allTime'] as const)"
                     :key="metric"
                     type="button"
                     class="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-xs normal-case tracking-normal hover:bg-gray-100 dark:hover:bg-dark-700"
@@ -526,7 +526,7 @@
                     :data-test="`usage-sort-${usageKey}-${metric}`"
                     @click.stop="toggleUsageSort(usageKey, metric)"
                   >
-                    <span>{{ metric === 'today' ? t('admin.users.today') : t('admin.users.total') }}</span>
+                    <span>{{ metric === 'today' ? t('admin.users.today') : metric === 'allTime' ? t('dates.allTime') : t('admin.users.total') }}</span>
                     <svg
                       v-if="getUsageSortOrder(usageKey, metric)"
                       class="h-3 w-3"
@@ -553,6 +553,7 @@
             <PlatformUsageBreakdown
               :today="usageStats[row.id]?.today_actual_cost ?? 0"
               :total="usageStats[row.id]?.total_actual_cost ?? 0"
+              :all-time="usageStats[row.id]?.all_time_actual_cost ?? 0"
               :by-platform="usageStats[row.id]?.by_platform"
             />
           </template>
@@ -1222,10 +1223,10 @@ const getPlatformUsage = (userId: number, platform: string) =>
 // 字段都会触发后端查询，而用量列数据是异步批量拉取后再合并到当前页，
 // 因此采用独立的前端排序状态对当前页 users 做本地排序。
 // 排序状态独立于后端 sortState 持久化；缺失数据按 0 处理（desc 沉底、asc 置顶）。
-type UsageMetric = 'today' | 'total'
+type UsageMetric = 'today' | 'total' | 'allTime'
 type UsageSortState = { key: string; metric: UsageMetric; order: 'asc' | 'desc' } | null
 const USAGE_SORT_STORAGE_KEY = 'admin-users-usage-sort'
-// 列头排序按钮点击后弹出的"今日/近30天"选择菜单，同时只允许一个列展开。
+// 列头排序按钮点击后弹出的"今日/近30天/历史累计"选择菜单，同时只允许一个列展开。
 const openUsageSortMenu = ref<string | null>(null)
 
 const loadInitialUsageSort = (): UsageSortState => {
@@ -1234,7 +1235,7 @@ const loadInitialUsageSort = (): UsageSortState => {
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<{ key: string; metric: string; order: string }>
     if (!parsed.key || !USAGE_COLUMN_KEYS.includes(parsed.key)) return null
-    const metric: UsageMetric = parsed.metric === 'total' ? 'total' : 'today'
+    const metric: UsageMetric = parsed.metric === 'allTime' ? 'allTime' : parsed.metric === 'total' ? 'total' : 'today'
     const order: 'asc' | 'desc' = parsed.order === 'asc' ? 'asc' : 'desc'
     return { key: parsed.key, metric, order }
   } catch {
@@ -1288,10 +1289,12 @@ const getUsageValue = (userId: number, key: string, metric: UsageMetric): number
   if (!stats) return 0
   const platform = USAGE_COLUMN_PLATFORMS[key]
   if (platform === null) {
+    if (metric === 'allTime') return stats.all_time_actual_cost ?? 0
     return metric === 'today' ? stats.today_actual_cost ?? 0 : stats.total_actual_cost ?? 0
   }
   const p = stats.by_platform?.find((x) => x.platform === platform)
   if (!p) return 0
+  if (metric === 'allTime') return p.all_time_actual_cost ?? 0
   return metric === 'today' ? p.today_actual_cost ?? 0 : p.total_actual_cost ?? 0
 }
 

@@ -231,6 +231,16 @@
                   ${{ (usageStats[row.id]?.total_actual_cost ?? 0).toFixed(4) }}
                 </span>
               </div>
+              <div class="mt-0.5 flex items-center gap-1.5" :title="t('dates.allTimeHint')">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('dates.allTime') }}:</span>
+                <span
+                  v-if="usageLoading && !usageStats[row.id]"
+                  class="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 dark:bg-dark-600"
+                />
+                <span v-else class="font-medium text-gray-900 dark:text-white">
+                  ${{ (usageStats[row.id]?.all_time_actual_cost ?? 0).toFixed(4) }}
+                </span>
+              </div>
               <!-- Quota progress (if quota is set) -->
               <div v-if="row.quota > 0" class="mt-1.5">
                 <div class="flex items-center gap-1.5">
@@ -1624,7 +1634,7 @@ const loadApiKeys = async () => {
     pagination.value.total = response.total
     pagination.value.pages = response.pages
 
-    // 用量统计要聚合 30 天的 usage_logs，可能比列表慢很多：不阻塞表格渲染，单独加载
+    // 用量统计要聚合现存 usage_logs，可能比列表慢很多：不阻塞表格渲染，单独加载
     usageLoading.value = response.items.length > 0
     if (response.items.length > 0) {
       void loadUsageStats(response.items.map((k) => k.id), signal)

@@ -20,7 +20,7 @@
           <div>
             <div class="font-semibold text-gray-900 dark:text-gray-100">{{ account.name }}</div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.last30DaysUsage') }}
+              {{ t(period === 'all' ? 'admin.accounts.allTimeUsage' : 'admin.accounts.last30DaysUsage') }}
             </div>
           </div>
         </div>
@@ -34,6 +34,17 @@
         >
           {{ account.status }}
         </span>
+      </div>
+
+      <div class="flex gap-2" role="group" :aria-label="t('admin.dashboard.timeRange')">
+        <button
+          v-for="option in periodOptions"
+          :key="option.value"
+          type="button"
+          :aria-pressed="period === option.value"
+          :class="['rounded-lg px-3 py-1.5 text-sm', period === option.value ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300']"
+          @click="period = option.value"
+        >{{ option.label }}</button>
       </div>
 
       <!-- Loading State -->
@@ -50,7 +61,7 @@
           >
             <div class="mb-2 flex items-center justify-between">
               <span class="text-xs font-medium text-gray-500 dark:text-gray-400">{{
-                t('admin.accounts.stats.totalCost')
+                t(period === 'all' ? 'admin.accounts.stats.allTimeCost' : 'admin.accounts.stats.totalCost')
               }}</span>
               <div class="rounded-lg bg-emerald-100 p-1.5 dark:bg-emerald-900/30">
                 <Icon name="dollar" size="sm" class="text-emerald-600 dark:text-emerald-400" />
@@ -76,7 +87,7 @@
           >
             <div class="mb-2 flex items-center justify-between">
               <span class="text-xs font-medium text-gray-500 dark:text-gray-400">{{
-                t('admin.accounts.stats.totalRequests')
+                t(period === 'all' ? 'admin.accounts.stats.allTimeRequests' : 'admin.accounts.stats.totalRequests')
               }}</span>
               <div class="rounded-lg bg-blue-100 p-1.5 dark:bg-blue-900/30">
                 <Icon name="bolt" size="sm" class="text-blue-600 dark:text-blue-400" />
@@ -214,7 +225,7 @@
                   t('admin.accounts.stats.date')
                 }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white">{{
-                  stats.summary.highest_cost_day?.label || '-'
+                  (period === 'all' ? stats.summary.highest_cost_day?.date : stats.summary.highest_cost_day?.label) || '-'
                 }}</span>
               </div>
               <div class="flex items-center justify-between">
@@ -260,7 +271,7 @@
                   t('admin.accounts.stats.date')
                 }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white">{{
-                  stats.summary.highest_request_day?.label || '-'
+                  (period === 'all' ? stats.summary.highest_request_day?.date : stats.summary.highest_request_day?.label) || '-'
                 }}</span>
               </div>
               <div class="flex items-center justify-between">
@@ -302,7 +313,7 @@
             <div class="space-y-2">
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{
-                  t('admin.accounts.stats.totalTokens')
+                  t(period === 'all' ? 'admin.accounts.stats.allTimeTokens' : 'admin.accounts.stats.totalTokens')
                 }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white">{{
                   formatTokens(stats.summary.total_tokens)
@@ -395,7 +406,7 @@
         <!-- Usage Trend Chart -->
         <div class="card p-4">
           <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">
-            {{ t('admin.accounts.stats.usageTrend') }}
+            {{ t(period === 'all' ? 'admin.accounts.stats.allTimeTrend' : 'admin.accounts.stats.usageTrend') }}
           </h3>
           <div class="h-64">
             <Line v-if="trendChartData" :data="trendChartData" :options="lineChartOptions" />
@@ -409,16 +420,18 @@
         </div>
 
         <!-- Model Distribution -->
-        <ModelDistributionChart :model-stats="stats.models" :loading="false" />
+        <ModelDistributionChart :model-stats="stats.models" :loading="false" :enable-breakdown="false" />
 
         <EndpointDistributionChart
           :endpoint-stats="stats.endpoints || []"
+          :enable-breakdown="false"
           :loading="false"
           :title="t('usage.inboundEndpoint')"
         />
 
         <EndpointDistributionChart
           :endpoint-stats="stats.upstream_endpoints || []"
+          :enable-breakdown="false"
           :loading="false"
           :title="t('usage.upstreamEndpoint')"
         />
@@ -494,6 +507,30 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const stats = ref<AccountUsageStatsResponse | null>(null)
+const period = ref<30 | 'all'>(30)
+const periodOptions = computed(() => [
+  { value: 30 as const, label: t('dates.last30Days') },
+  { value: 'all' as const, label: t('dates.allTime') }
+])
+let requestVersion = 0
+
+// Keep long histories readable without changing daily summary statistics.
+const trendHistory = computed(() => {
+  const history = stats.value?.history ?? []
+  if (period.value !== 'all' || history.length <= 90) {
+    return history.map((h) => ({ ...h, label: period.value === 'all' ? h.date : h.label }))
+  }
+  const months = new Map<string, { label: string; actual_cost: number; user_cost: number; requests: number }>()
+  for (const day of history) {
+    const month = day.date.slice(0, 7)
+    const bucket = months.get(month) ?? { label: month, actual_cost: 0, user_cost: 0, requests: 0 }
+    bucket.actual_cost += day.actual_cost
+    bucket.user_cost += day.user_cost
+    bucket.requests += day.requests
+    months.set(month, bucket)
+  }
+  return [...months.values()]
+})
 
 // Dark mode detection
 const isDarkMode = computed(() => {
@@ -511,11 +548,11 @@ const trendChartData = computed(() => {
   if (!stats.value?.history?.length) return null
 
   return {
-    labels: stats.value.history.map((h) => h.label),
+    labels: trendHistory.value.map((h) => h.label),
     datasets: [
       {
         label: t('usage.accountBilled') + ' (USD)',
-        data: stats.value.history.map((h) => h.actual_cost),
+        data: trendHistory.value.map((h) => h.actual_cost),
         borderColor: '#3b82f6',
         backgroundColor: 'rgba(59, 130, 246, 0.1)',
         fill: true,
@@ -524,7 +561,7 @@ const trendChartData = computed(() => {
       },
       {
         label: t('usage.userBilled') + ' (USD)',
-        data: stats.value.history.map((h) => h.user_cost),
+        data: trendHistory.value.map((h) => h.user_cost),
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.08)',
         fill: false,
@@ -534,7 +571,7 @@ const trendChartData = computed(() => {
       },
       {
         label: t('admin.accounts.stats.requests'),
-        data: stats.value.history.map((h) => h.requests),
+        data: trendHistory.value.map((h) => h.requests),
         borderColor: '#f97316',
         backgroundColor: 'rgba(249, 115, 22, 0.1)',
         fill: false,
@@ -642,31 +679,29 @@ const lineChartOptions = computed(() => ({
   }
 }))
 
-// Load stats when modal opens
+// Invalidate in-flight requests on account, period, visibility changes, or unmount.
 watch(
-  () => props.show,
-  async (newVal) => {
-    if (newVal && props.account) {
-      await loadStats()
-    } else {
-      stats.value = null
-    }
-  }
-)
-
-const loadStats = async () => {
-  if (!props.account) return
-
-  loading.value = true
-  try {
-    stats.value = await adminAPI.accounts.getStats(props.account.id, 30)
-  } catch (error) {
-    console.error('Failed to load account stats:', error)
+  () => [props.show, props.account?.id, period.value] as const,
+  async ([show], _, onCleanup) => {
+    const version = ++requestVersion
+    onCleanup(() => { requestVersion++ })
     stats.value = null
-  } finally {
-    loading.value = false
-  }
-}
+    if (!show || !props.account) {
+      loading.value = false
+      return
+    }
+    loading.value = true
+    try {
+      const result = await adminAPI.accounts.getStats(props.account.id, period.value)
+      if (version === requestVersion) stats.value = result
+    } catch (error) {
+      if (version === requestVersion) console.error('Failed to load account stats:', error)
+    } finally {
+      if (version === requestVersion) loading.value = false
+    }
+  },
+  { immediate: true }
+)
 
 const handleClose = () => {
   emit('close')
