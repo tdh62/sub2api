@@ -93,6 +93,10 @@ func (h *AccountHandler) scopedAdminStatistics(c *gin.Context) bool {
 		}
 		// 不读取全权批量缓存，避免不同权限共享 ETag 或未裁剪结果。
 		if action == "accounts.stats.read" {
+			if req.CacheOnly {
+				response.Success(c, gin.H{"stats": map[string]any{}})
+				return true
+			}
 			stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), ids)
 			if err != nil {
 				response.Error(c, 502, "账户统计查询失败")
@@ -101,7 +105,7 @@ func (h *AccountHandler) scopedAdminStatistics(c *gin.Context) bool {
 			response.Success(c, gin.H{"stats": stats})
 			return true
 		}
-		usage, errs, err := h.accountUsageService.GetUsageBatch(c.Request.Context(), ids, req.Force)
+		usage, errs, err := h.accountUsageService.GetUsageBatch(c.Request.Context(), ids, req.Force, req.CacheOnly)
 		if err != nil {
 			response.Error(c, 502, "账户额度查询失败")
 			return true

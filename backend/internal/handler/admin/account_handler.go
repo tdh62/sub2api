@@ -2699,11 +2699,14 @@ func (h *AccountHandler) GetTodayStats(c *gin.Context) {
 // BatchTodayStatsRequest 批量今日统计请求体。
 type BatchTodayStatsRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required"`
+	Force      bool    `json:"force"`
+	CacheOnly  bool    `json:"cache_only"`
 }
 
 type BatchUsageRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required"`
 	Force      bool    `json:"force"`
+	CacheOnly  bool    `json:"cache_only"`
 }
 
 // GetBatchTodayStats 批量获取多个账号的今日统计。
@@ -2722,7 +2725,7 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 
 	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
-	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
+	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok && (!req.Force || req.CacheOnly) {
 		if cached.ETag != "" {
 			c.Header("ETag", cached.ETag)
 			c.Header("Vary", "If-None-Match")
@@ -2736,6 +2739,10 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
+	if req.CacheOnly {
+		response.Success(c, gin.H{"stats": map[string]any{}})
+		return
+	}
 	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -2770,7 +2777,7 @@ func (h *AccountHandler) GetBatchUsage(c *gin.Context) {
 		return
 	}
 
-	usageByAccount, errorsByAccount, err := h.accountUsageService.GetUsageBatch(c.Request.Context(), accountIDs, req.Force)
+	usageByAccount, errorsByAccount, err := h.accountUsageService.GetUsageBatch(c.Request.Context(), accountIDs, req.Force, req.CacheOnly)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

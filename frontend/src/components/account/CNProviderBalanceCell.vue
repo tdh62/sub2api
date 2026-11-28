@@ -67,6 +67,7 @@ import { cnBalanceCellVisible } from './credentialsBuilder'
 
 const props = defineProps<{
   account: Account
+  manualRefreshToken?: number
 }>()
 
 const { t } = useI18n()
@@ -167,6 +168,10 @@ const handleProbe = async () => {
     loading.value = false
   }
 }
+
+watch(() => props.manualRefreshToken, () => {
+  if (visible.value) void handleProbe()
+})
 
 watch(
   () => props.account.id,

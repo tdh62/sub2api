@@ -190,6 +190,27 @@ func TestAccountUsageService_GetUsageBatch_BestEffortByAccount(t *testing.T) {
 	}
 }
 
+func TestUsageBatchCacheOnlySkipsProbesAndMisses(t *testing.T) {
+	svc := &AccountUsageService{
+		accountRepo: &stubOpenAIAccountRepo{accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"codex_5h_used_percent": 37.0}},
+			{ID: 2, Platform: PlatformAntigravity, Type: AccountTypeOAuth},
+			{ID: 3, Platform: PlatformGemini, Type: AccountTypeOAuth},
+		}},
+		cache: NewUsageCache(),
+	}
+	usage, failures, err := svc.GetUsageBatch(context.Background(), []int64{1, 2, 3}, false, true)
+	if err != nil || len(failures) != 0 || len(usage) != 1 {
+		t.Fatalf("cache-only batch: got %v, %v, %v", usage, failures, err)
+	}
+	if got := usage[1]; got == nil || got.FiveHour == nil || got.FiveHour.Utilization != 37 || got.ErrorCode != "" {
+		t.Fatalf("expected persisted OpenAI quota: %#v", got)
+	}
+	if _, ok := svc.cache.openAIProbeCache.Load(int64(1)); ok {
+		t.Fatal("cache read scheduled a probe")
+	}
+}
+
 // Model ClearError's persisted effect so this regression catches both the write
 // and mutations of the account returned by the repository.
 type usageErrorAccountRepo struct {

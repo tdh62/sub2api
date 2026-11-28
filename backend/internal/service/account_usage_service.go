@@ -128,6 +128,7 @@ type UsageCache struct {
 	apiCache          sync.Map           // accountID -> *apiUsageCache
 	windowStatsCache  sync.Map           // windowStatsCacheKey -> *windowStatsCache
 	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
+	geminiCache       sync.Map           // accountID -> last computed *UsageInfo
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
@@ -436,7 +437,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		var apiResp *ClaudeUsageResponse
 
 		// 1. 检查缓存（成功响应 3 分钟 / 错误响应 1 分钟）
-		if cached, ok := s.cache.apiCache.Load(accountID); ok {
+		if cached, ok := s.cache.apiCache.Load(accountID); ok && !forceProbe {
 			if cache, ok := cached.(*apiUsageCache); ok {
 				age := time.Since(cache.timestamp)
 				if cache.err != nil && age < apiErrorCacheTTL {
@@ -463,7 +464,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 			flightKey := fmt.Sprintf("usage:%d", accountID)
 			result, flightErr, _ := s.cache.apiFlight.Do(flightKey, func() (any, error) {
 				// 再次检查缓存（可能在等待 singleflight 期间被其他请求填充）
-				if cached, ok := s.cache.apiCache.Load(accountID); ok {
+				if cached, ok := s.cache.apiCache.Load(accountID); ok && !forceProbe {
 					if cache, ok := cached.(*apiUsageCache); ok {
 						age := time.Since(cache.timestamp)
 						if cache.err != nil && age < apiErrorCacheTTL {
@@ -554,9 +555,9 @@ func (s *AccountUsageService) GetUsageForAccount(ctx context.Context, account *A
 }
 
 // GetUsageBatch 批量获取账号使用量。
-// Anthropic OAuth/SetupToken 统一走 passive 链路，其他账号复用现有主动查询逻辑。
+// Anthropic 默认使用被动采样；手动刷新 OAuth 时可主动查询，SetupToken 只支持被动采样。
 // 单个账号失败不会中断整批请求，错误会按账号返回。
-func (s *AccountUsageService) GetUsageBatch(ctx context.Context, accountIDs []int64, force bool) (map[int64]*UsageInfo, map[int64]string, error) {
+func (s *AccountUsageService) GetUsageBatch(ctx context.Context, accountIDs []int64, force bool, cacheOnly ...bool) (map[int64]*UsageInfo, map[int64]string, error) {
 	if adminaccess.RestrictedFromContext(ctx) != nil {
 		if len(accountIDs) > 100 {
 			return nil, nil, fmt.Errorf("账户数量超过限制")
@@ -614,14 +615,23 @@ func (s *AccountUsageService) GetUsageBatch(ctx context.Context, accountIDs []in
 		id := accountID
 		account := accountsByID[id]
 		if account == nil {
+			mu.Lock()
 			errorsByAccount[id] = ErrAccountNotFound.Error()
+			mu.Unlock()
 			continue
 		}
 
+		// Finish cache-only reads inline, before scheduling any upstream work.
+		if len(cacheOnly) > 0 && cacheOnly[0] {
+			if usage := s.cachedUsageForList(account); usage != nil {
+				usageByAccount[id] = usage
+			}
+			continue
+		}
 		g.Go(func() error {
 			var usage *UsageInfo
 			var usageErr error
-			if supportsAnthropicPassiveUsage(account) {
+			if supportsAnthropicPassiveUsage(account) && (!force || account.Type == AccountTypeSetupToken) {
 				usage, usageErr = s.getPassiveUsageForAccount(gctx, account)
 			} else {
 				usage, usageErr = s.getUsageForAccount(gctx, account, force)
@@ -645,6 +655,46 @@ func (s *AccountUsageService) GetUsageBatch(ctx context.Context, accountIDs []in
 	return usageByAccount, errorsByAccount, nil
 }
 
+// cachedUsageForList reads only in-memory or persisted observations. A missing
+// or expired observation must never trigger a probe or a usage-log query.
+func (s *AccountUsageService) cachedUsageForList(account *Account) *UsageInfo {
+	switch {
+	case supportsAnthropicPassiveUsage(account):
+		info := s.passiveUsageSnapshot(account)
+		if s.cache != nil {
+			if raw, ok := s.cache.apiCache.Load(account.ID); ok {
+				cached := raw.(*apiUsageCache)
+				if cached.response != nil && (info.UpdatedAt == nil || cached.timestamp.After(*info.UpdatedAt)) {
+					active := s.buildUsageInfo(cached.response, &cached.timestamp)
+					if active.SevenDayFable == nil {
+						active.SevenDayFable = info.SevenDayFable
+					}
+					return active
+				}
+			}
+		}
+		if account.SessionWindowEnd == nil {
+			info.FiveHour = nil
+		}
+		return info
+	case account.IsOpenAIOAuth():
+		info := &UsageInfo{Source: "passive"}
+		applyExtraToUsage(info, account.Extra, time.Now())
+		return info
+	case account.IsGrokOAuth() && s.grokQuotaFetcher != nil:
+		return s.grokQuotaFetcher.BuildUsageInfo(account)
+	case account.Platform == PlatformAntigravity && s.cache != nil:
+		if cached, ok := s.cache.antigravityCache.Load(account.ID); ok {
+			return antigravityUsageSnapshot(cached.(*antigravityUsageCache).usageInfo)
+		}
+	case account.Platform == PlatformGemini && s.cache != nil:
+		if cached, ok := s.cache.geminiCache.Load(account.ID); ok {
+			return cached.(*UsageInfo)
+		}
+	}
+	return nil
+}
+
 // GetPassiveUsage 从 Account.Extra 中的被动采样数据构建 UsageInfo，不调用外部 API。
 // 仅适用于 Anthropic OAuth / SetupToken 账号。
 func (s *AccountUsageService) GetPassiveUsage(ctx context.Context, accountID int64) (*UsageInfo, error) {
@@ -664,6 +714,15 @@ func (s *AccountUsageService) getPassiveUsageForAccount(ctx context.Context, acc
 		return nil, fmt.Errorf("passive usage only supported for Anthropic OAuth/SetupToken accounts")
 	}
 
+	info := s.passiveUsageSnapshot(account)
+	s.addWindowStats(ctx, account, info)
+	if account.IsSyntheticUITest() {
+		applySyntheticWindowStats(info, account.Extra)
+	}
+	return info, nil
+}
+
+func (s *AccountUsageService) passiveUsageSnapshot(account *Account) *UsageInfo {
 	// 复用 estimateSetupTokenUsage 构建 5h 窗口（OAuth 和 SetupToken 逻辑一致）
 	info := s.estimateSetupTokenUsage(account)
 	info.Source = "passive"
@@ -683,13 +742,7 @@ func (s *AccountUsageService) getPassiveUsageForAccount(ctx context.Context, acc
 	// 构建 7d Fable 窗口（从被动采样的 7d_oi 响应头数据）
 	info.SevenDayFable = buildPassiveUsageWindow(account.Extra, "passive_usage_7d_oi_utilization", "passive_usage_7d_oi_reset")
 
-	// 添加窗口统计
-	s.addWindowStats(ctx, account, info)
-	if account.IsSyntheticUITest() {
-		applySyntheticWindowStats(info, account.Extra)
-	}
-
-	return info, nil
+	return info
 }
 
 func applySyntheticWindowStats(info *UsageInfo, extra map[string]any) {
@@ -1142,6 +1195,9 @@ func (s *AccountUsageService) getGeminiUsage(ctx context.Context, account *Accou
 		usage.GeminiFlashMinute = buildGeminiUsageProgress(minuteTotals.FlashRequests, quota.FlashRPM, minuteResetAt, minuteTotals.FlashTokens, minuteTotals.FlashCost, now)
 	}
 
+	if s.cache != nil {
+		s.cache.geminiCache.Store(account.ID, usage)
+	}
 	return usage, nil
 }
 
@@ -1160,10 +1216,7 @@ func (s *AccountUsageService) cachedAntigravityUsage(accountID int64, force bool
 	if !ok || time.Since(cache.timestamp) >= antigravityCacheTTL(cache.usageInfo) {
 		return nil, false
 	}
-	usage := cache.usageInfo
-	// 重新计算 RemainingSeconds，避免返回过时的剩余秒数
-	recalcAntigravityRemainingSeconds(usage)
-	return usage, true
+	return antigravityUsageSnapshot(cache.usageInfo), true
 }
 
 // getAntigravityUsage 获取 Antigravity 账户额度；force 跳过缓存（仍经 singleflight 合并并发请求）。
@@ -1377,19 +1430,17 @@ func (s *AccountUsageService) shouldProbeGrokBilling(accountID int64, now time.T
 	return true
 }
 
-// recalcAntigravityRemainingSeconds 重新计算 Antigravity UsageInfo 中各窗口的 RemainingSeconds
-// 用于从缓存取出时更新倒计时，避免返回过时的剩余秒数
-func recalcAntigravityRemainingSeconds(info *UsageInfo) {
-	if info == nil {
-		return
+// antigravityUsageSnapshot recalculates the countdown on a private copy.
+// The cached observation can be read concurrently by list and usage requests.
+func antigravityUsageSnapshot(info *UsageInfo) *UsageInfo {
+	if info == nil || info.FiveHour == nil || info.FiveHour.ResetsAt == nil {
+		return info
 	}
-	if info.FiveHour != nil && info.FiveHour.ResetsAt != nil {
-		remaining := int(time.Until(*info.FiveHour.ResetsAt).Seconds())
-		if remaining < 0 {
-			remaining = 0
-		}
-		info.FiveHour.RemainingSeconds = remaining
-	}
+	snapshot := *info
+	window := *info.FiveHour
+	window.RemainingSeconds = max(0, int(time.Until(*window.ResetsAt).Seconds()))
+	snapshot.FiveHour = &window
+	return &snapshot
 }
 
 // antigravityCacheTTL 根据 UsageInfo 内容决定缓存 TTL

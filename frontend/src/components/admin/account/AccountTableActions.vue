@@ -1,8 +1,9 @@
 <template>
   <div class="flex flex-wrap items-center gap-3">
     <slot name="before"></slot>
-    <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary">
+    <button type="button" @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary">
       <Icon name="refresh" size="md" :class="[loading ? 'animate-spin' : '']" />
+      {{ t('admin.accounts.refreshList') }}
     </button>
     <slot name="after"></slot>
     <slot name="beforeCreate"></slot>

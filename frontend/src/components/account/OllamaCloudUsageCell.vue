@@ -56,7 +56,7 @@ import { adminAPI } from '@/api/admin'
 import type { Account, OllamaCloudUsageState } from '@/types'
 import UsageProgressBar from './UsageProgressBar.vue'
 
-const props = defineProps<{ account: Account }>()
+const props = defineProps<{ account: Account; manualRefreshToken?: number }>()
 const emit = defineEmits<{ updated: [state: OllamaCloudUsageState] }>()
 const { t } = useI18n()
 const state = ref(props.account.ollama_cloud_usage)
@@ -80,4 +80,8 @@ const refreshUsage = async () => {
     refreshing.value = false
   }
 }
+
+watch(() => props.manualRefreshToken, () => {
+  if (state.value?.configured) void refreshUsage()
+})
 </script>

@@ -515,6 +515,7 @@
       <OllamaCloudUsageCell
         v-if="account.ollama_cloud_usage?.eligible"
         :account="account"
+        :manual-refresh-token="manualRefreshToken"
         @updated="handleOllamaCloudUsageUpdated"
       />
       <!-- 挂在 CN 平台下的 OpenCode Go 账号（资格由后端下发 eligible）：用量展示与
@@ -529,6 +530,7 @@
       <OpenCodeGoUsageCell
         v-else-if="account.opencode_go_usage?.eligible"
         :account="account"
+        :manual-refresh-token="manualRefreshToken"
         @updated="handleOpenCodeGoUsageUpdated"
       />
       <div v-else class="space-y-1">
@@ -539,8 +541,8 @@
           class="text-xs text-gray-400"
           :title="t('admin.accounts.cnProviders.noBalanceEndpoint')"
         >-</div>
-        <CNProviderQuotaCell :account="account" />
-        <CNProviderBalanceCell :account="account" />
+        <CNProviderQuotaCell :account="account" :manual-refresh-token="manualRefreshToken" />
+        <CNProviderBalanceCell :account="account" :manual-refresh-token="manualRefreshToken" />
       </div>
     </template>
 
@@ -673,7 +675,7 @@
         </div>
         <!-- AI Studio Client OAuth: show unlimited flow (no usage tracking) -->
         <div v-else-if="!showGeminiTodayStats" class="text-xs text-gray-400">
-          {{ t('admin.accounts.gemini.rateLimit.unlimited') }}
+          {{ usageInfo ? t('admin.accounts.gemini.rateLimit.unlimited') : '-' }}
         </div>
       </div>
     </template>
@@ -693,6 +695,7 @@
       <OllamaCloudUsageCell
         v-if="account.ollama_cloud_usage?.eligible"
         :account="account"
+        :manual-refresh-token="manualRefreshToken"
         @updated="handleOllamaCloudUsageUpdated"
       />
       <!-- 与上方 CN 分支结构对齐：Ollama 与 OpenCode 用量身份互斥（基址 host 不同），
@@ -700,6 +703,7 @@
       <OpenCodeGoUsageCell
         v-else-if="account.opencode_go_usage?.eligible"
         :account="account"
+        :manual-refresh-token="manualRefreshToken"
         @updated="handleOpenCodeGoUsageUpdated"
       />
       <!-- Today stats row (requests, tokens, cost, user_cost) -->
@@ -954,7 +958,7 @@ const shouldAutoLoadUsageOnMount = computed(() => {
 })
 
 const shouldLazyLoadOnMobile = computed(() => {
-  return shouldFetchUsage.value && !isDesktopViewport.value
+  return shouldFetchUsage.value && !isBatchManaged.value && !isDesktopViewport.value
 })
 
 // Antigravity quota types (用于 API 返回的数据)
@@ -1843,7 +1847,7 @@ watch(usageRefreshKey, (nextKey, prevKey) => {
   if (!shouldFetchUsage.value) return
 
   if (isBatchManaged.value) {
-    requestParentBatchUsage(props.account.platform === 'openai' ? { force: true } : undefined)
+    requestParentBatchUsage()
     return
   }
 

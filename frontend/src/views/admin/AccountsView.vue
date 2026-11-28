@@ -17,6 +17,15 @@
             @create="showCreate = true"
           >
             <template #after>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="loading || !accounts.length || usageRefreshing || (hiddenColumns.has('usage') && hiddenColumns.has('today_stats'))"
+                @click="handleUsageRefresh"
+              >
+                <Icon name="refresh" size="sm" :class="{ 'animate-spin': usageRefreshing }" />
+                {{ t('admin.accounts.refreshUsage') }}
+              </button>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -334,7 +343,7 @@
               :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
               :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
               :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
-              :request-batched-usage="isDesktopViewport ? queueBatchedUsage : null"
+              :request-batched-usage="queueBatchedUsage"
               @account-updated="handleAccountUpdated"
               @usage-loaded="handleAccountUsageLoaded(row.id, $event)"
             />
@@ -750,22 +759,15 @@ const todayStatsReqSeq = ref(0)
 const pendingTodayStatsRefresh = ref(false)
 const usageManualRefreshToken = ref(0)
 
-const desktopViewportQuery = '(min-width: 768px)'
-const isDesktopViewport = ref(
-  typeof window === 'undefined' ? true : window.matchMedia(desktopViewportQuery).matches
-)
-let desktopViewportMediaQuery: MediaQueryList | null = null
-let desktopViewportListener: ((event: MediaQueryListEvent) => void) | null = null
-
 const usageBatchByAccountId = ref<Record<string, AccountUsageInfo | null>>({})
 const usageBatchErrorByAccountId = ref<Record<string, string | null>>({})
 const usageBatchLoadingByAccountId = ref<Record<string, boolean>>({})
+const usageRefreshing = computed(() => todayStatsLoading.value || Object.values(usageBatchLoadingByAccountId.value).some(Boolean))
 const usageBatchRequestTokenByAccountId = ref<Record<string, number>>({})
 const usageBatchCache = new Map<number, { data: AccountUsageInfo; ts: number; refreshKey: string }>()
 const USAGE_BATCH_CACHE_TTL = 5 * 60 * 1000
-const pendingUsageBatchIds = new Set<number>()
+const pendingUsageBatchIds = new Map<number, boolean>()
 let usageBatchFlushTimer: ReturnType<typeof setTimeout> | null = null
-let queuedUsageBatchForce = false
 let usageBatchRequestToken = 0
 
 const buildDefaultTodayStats = (): WindowStats => ({
@@ -809,15 +811,12 @@ const setUsageBatchState = (accountID: number, usage: AccountUsageInfo | null, e
 const handleAccountUsageLoaded = (accountID: number, usage: AccountUsageInfo) => {
   if (usageBatchByAccountId.value[String(accountID)] === usage) return
   setUsageBatchState(accountID, usage, null)
+  const account = accounts.value.find(row => row.id === accountID)
+  if (account) usageBatchCache.set(accountID, { data: usage, ts: Date.now(), refreshKey: buildAccountUsageRefreshKey(account) })
 }
 
-const flushQueuedUsageBatch = async () => {
-  usageBatchFlushTimer = null
-  const accountIDs = Array.from(pendingUsageBatchIds)
-  const force = queuedUsageBatchForce
+const fetchUsageBatch = async (accountIDs: number[], force: boolean) => {
   const refreshKeys = new Map(accounts.value.map(account => [account.id, buildAccountUsageRefreshKey(account)]))
-  pendingUsageBatchIds.clear()
-  queuedUsageBatchForce = false
 
   if (accountIDs.length === 0) return
 
@@ -827,7 +826,7 @@ const flushQueuedUsageBatch = async () => {
   }, {})
 
   try {
-    const result = await adminAPI.accounts.getBatchUsage(accountIDs, force)
+    const result = await adminAPI.accounts.getBatchUsage(accountIDs, force, !force)
 
     const usageMap = result.usage ?? {}
     const errorMap = result.errors ?? {}
@@ -842,7 +841,7 @@ const flushQueuedUsageBatch = async () => {
         continue
       }
       const usage = usageMap[key] ?? null
-      nextUsage[key] = usage
+      if (!errorMap[key]) nextUsage[key] = usage
       nextErrors[key] = errorMap[key] ?? null
       nextLoading[key] = false
       if (usage) {
@@ -873,13 +872,14 @@ const flushQueuedUsageBatch = async () => {
 }
 
 const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
-  if (!isDesktopViewport.value) return
   if (!accountSupportsBatchUsage(account)) return
 
   const force = options?.force === true
   const cacheKey = account.id
   const key = String(cacheKey)
 
+  // Remounts and list updates must not supersede an in-flight manual refresh.
+  if (!force && usageBatchLoadingByAccountId.value[key]) return
   if (force) {
     usageBatchCache.delete(cacheKey)
   } else {
@@ -900,16 +900,24 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
     [key]: ++usageBatchRequestToken
   }
   setUsageBatchLoading(cacheKey, true)
-  pendingUsageBatchIds.add(cacheKey)
-  queuedUsageBatchForce = queuedUsageBatchForce || force
+  pendingUsageBatchIds.set(cacheKey, force || pendingUsageBatchIds.get(cacheKey) === true)
 
   if (usageBatchFlushTimer !== null) return
   usageBatchFlushTimer = setTimeout(() => {
-    void flushQueuedUsageBatch()
+    usageBatchFlushTimer = null
+    const cached: number[] = []
+    const manual: number[] = []
+    for (const [id, refresh] of pendingUsageBatchIds) {
+      if (refresh) manual.push(id)
+      else cached.push(id)
+    }
+    pendingUsageBatchIds.clear()
+    void fetchUsageBatch(cached, false)
+    void fetchUsageBatch(manual, true)
   }, 0)
 }
 
-const refreshTodayStatsBatch = async () => {
+const refreshTodayStatsBatch = async (cacheOnly = true) => {
   // Why this checks both columns:
   // - today_stats column shows dedicated today's metrics.
   // - usage column also embeds today's stats for Key/Bedrock rows.
@@ -933,13 +941,14 @@ const refreshTodayStatsBatch = async () => {
   todayStatsError.value = null
 
   try {
-    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs)
+    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs, cacheOnly)
     if (reqSeq !== todayStatsReqSeq.value) return
     const serverStats = result.stats ?? {}
     const nextStats: Record<string, WindowStats> = {}
     for (const accountID of accountIDs) {
       const key = String(accountID)
-      nextStats[key] = serverStats[key] ?? buildDefaultTodayStats()
+      const stats = serverStats[key] ?? (cacheOnly ? todayStatsByAccountId.value[key] : buildDefaultTodayStats())
+      if (stats) nextStats[key] = stats
     }
     todayStatsByAccountId.value = nextStats
   } catch (error) {
@@ -1525,8 +1534,6 @@ const refreshAccountsIncrementally = async () => {
       hasPendingListSync.value = false
     }
     upstreamBillingNow.value = Date.now()
-
-    await refreshTodayStatsBatch()
   } catch (error) {
     console.error('Auto refresh failed:', error)
   } finally {
@@ -1535,9 +1542,12 @@ const refreshAccountsIncrementally = async () => {
 }
 
 const handleManualRefresh = async () => {
-  await Promise.all([load(), loadUpstreamBillingProbeGlobalState()])
-  // Force usage cells to refetch /usage on explicit user refresh.
+  await Promise.all([load({ refreshTodayStats: false }), loadUpstreamBillingProbeGlobalState()])
+}
+
+const handleUsageRefresh = () => {
   usageManualRefreshToken.value += 1
+  void refreshTodayStatsBatch(false)
 }
 
 const loadUpstreamBillingProbeGlobalState = async () => {
@@ -1600,8 +1610,6 @@ const openTLSFingerprintProfiles = () => {
 const syncPendingListChanges = async () => {
   hasPendingListSync.value = false
   await load()
-  // Keep behavior consistent with manual refresh.
-  usageManualRefreshToken.value += 1
 }
 
 const { pause: pauseAutoRefresh, resume: resumeAutoRefresh } = useIntervalFn(
@@ -2606,19 +2614,6 @@ const handleClickOutside = (event: MouseEvent) => {
 }
 
 onMounted(async () => {
-  if (typeof window !== 'undefined') {
-    desktopViewportMediaQuery = window.matchMedia(desktopViewportQuery)
-    isDesktopViewport.value = desktopViewportMediaQuery.matches
-    desktopViewportListener = (event: MediaQueryListEvent) => {
-      isDesktopViewport.value = event.matches
-    }
-    if (typeof desktopViewportMediaQuery.addEventListener === 'function') {
-      desktopViewportMediaQuery.addEventListener('change', desktopViewportListener)
-    } else {
-      desktopViewportMediaQuery.addListener(desktopViewportListener)
-    }
-  }
-
   load()
   loadUpstreamBillingProbeGlobalState()
   const [proxiesResult, groupsResult] = await Promise.allSettled([
@@ -2657,15 +2652,6 @@ onUnmounted(() => {
   window.removeEventListener('scroll', handleScroll, true)
   window.removeEventListener('resize', handleViewportResize)
   document.removeEventListener('click', handleClickOutside)
-  if (desktopViewportMediaQuery && desktopViewportListener) {
-    if (typeof desktopViewportMediaQuery.removeEventListener === 'function') {
-      desktopViewportMediaQuery.removeEventListener('change', desktopViewportListener)
-    } else {
-      desktopViewportMediaQuery.removeListener(desktopViewportListener)
-    }
-  }
-  desktopViewportListener = null
-  desktopViewportMediaQuery = null
 })
 </script>
 

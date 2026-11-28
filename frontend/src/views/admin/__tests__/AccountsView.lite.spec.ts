@@ -223,7 +223,7 @@ describe('admin AccountsView lite account list', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
     expect(getBatchUsage).toHaveBeenCalledTimes(1)
-    expect(getBatchUsage).toHaveBeenCalledWith([42], false)
+    expect(getBatchUsage).toHaveBeenCalledWith([42], false, true)
 
     const next = { ...account, extra: { session_window_utilization: 0.44, passive_usage_7d_utilization: 0.54 }, last_used_at: platform === 'gemini' ? '2026-11-16T10:00:00Z' : null }
     getBatchUsage.mockResolvedValue({ usage: { '42': { five_hour: { utilization: 44 }, seven_day: { utilization: 54 } } }, errors: {} })
@@ -231,7 +231,7 @@ describe('admin AccountsView lite account list', () => {
     await vi.advanceTimersByTimeAsync(6000)
     await flushPromises()
     expect(getBatchUsage).toHaveBeenCalledTimes(2)
-    expect(getBatchUsage).toHaveBeenLastCalledWith([42], false)
+    expect(getBatchUsage).toHaveBeenLastCalledWith([42], false, true)
     const cell = wrapper.findComponent({ name: 'AccountUsageCell' })
     expect(cell.props('account').last_used_at).toBe(next.last_used_at)
     expect(cell.props('batchedUsage').seven_day.utilization).toBe(54)
@@ -243,6 +243,33 @@ describe('admin AccountsView lite account list', () => {
     await vi.advanceTimersByTimeAsync(6000)
     await flushPromises()
     expect(getBatchUsage).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it.each([true, false])('only refreshes usage on explicit request (desktop=%s)', async (desktop) => {
+    vi.useFakeTimers()
+    vi.spyOn(window, 'matchMedia').mockImplementation(() => ({
+      matches: desktop, addEventListener: vi.fn(), removeEventListener: vi.fn()
+    }) as unknown as MediaQueryList)
+    const wrapper = mountView(true, true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getBatchUsage).toHaveBeenCalledWith([42], false, true)
+    expect(getBatchTodayStats).toHaveBeenCalledWith([42], true)
+    expect(wrapper.text()).toContain('21')
+
+    await wrapper.get('[data-test="manual-refresh"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getBatchUsage).toHaveBeenCalledTimes(1)
+    expect(getBatchTodayStats).toHaveBeenCalledTimes(1)
+    expect(listAccounts).toHaveBeenCalledTimes(2)
+
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.refreshUsage')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getBatchUsage).toHaveBeenLastCalledWith([42], true, false)
+    expect(getBatchTodayStats).toHaveBeenLastCalledWith([42], false)
+    expect(listAccounts).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 

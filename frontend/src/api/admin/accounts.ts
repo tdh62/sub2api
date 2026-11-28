@@ -391,10 +391,11 @@ export interface BatchAccountUsageResponse {
   errors: Record<string, string>
 }
 
-export async function getBatchUsage(accountIds: number[], force?: boolean): Promise<BatchAccountUsageResponse> {
+export async function getBatchUsage(accountIds: number[], force?: boolean, cacheOnly = false): Promise<BatchAccountUsageResponse> {
   const { data } = await apiClient.post<BatchAccountUsageResponse>('/admin/accounts/usage/batch', {
     account_ids: accountIds,
-    force: force === true
+    force: force === true,
+    cache_only: cacheOnly
   })
   return data
 }
@@ -578,9 +579,11 @@ export interface BatchTodayStatsResponse {
  * @param accountIds - 账号 ID 列表
  * @returns 以账号 ID（字符串）为键的统计映射
  */
-export async function getBatchTodayStats(accountIds: number[]): Promise<BatchTodayStatsResponse> {
+export async function getBatchTodayStats(accountIds: number[], cacheOnly?: boolean): Promise<BatchTodayStatsResponse> {
   const { data } = await apiClient.post<BatchTodayStatsResponse>('/admin/accounts/today-stats/batch', {
-    account_ids: accountIds
+    account_ids: accountIds,
+    cache_only: cacheOnly === true,
+    force: cacheOnly === false
   })
   return data
 }
